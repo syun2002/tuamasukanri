@@ -265,6 +265,58 @@
 
     <div class="status" id="cameraStatus">OpenCV.js 読み込み中…</div>
 
+<!-- ▼ ここから追加：カード名自動生成UI ▼ -->
+
+<div class="field">
+  <label>弾数</label>
+  <select id="seriesSelect"></select>
+</div>
+
+<div class="field">
+  <label>カードNo</label>
+  <select id="cardNoSelect"></select>
+</div>
+
+<div class="field">
+  <label>レアリティ</label>
+  <select id="raritySelect">
+    <option value="N">N</option>
+    <option value="R">R</option>
+    <option value="SR">SR</option>
+    <option value="SSR">SSR</option>
+    <option value="CO">CO</option>
+    <option value="TR">TR</option>
+    <option value="P">P</option>
+  </select>
+</div>
+
+<div class="field">
+  <label>カード名（キャラ名）</label>
+  <select id="characterSelect"></select>
+  <button id="addCharacterBtn" class="secondary">追加</button>
+  <button id="removeCharacterBtn" class="secondary">削除</button>
+</div>
+
+<div class="field">
+  <label>生成されたカード名</label>
+  <input id="generatedName" type="text" readonly />
+</div>
+
+<!-- ▲ ここまで追加：カード名自動生成UI ▲ -->
+
+<div class="field">
+  <label>並び替え</label>
+  <select id="sortSelect">
+    <option value="default">登録順</option>
+    <option value="series">弾数順</option>
+    <option value="cardNo">カードNo順</option>
+    <option value="rarity">レアリティ順</option>
+    <option value="name">キャラ名順</option>
+    <option value="obtained">取得状況順（取得済→未取得）</option>
+  </select>
+</div>
+
+
     <div class="field">
       <label for="cardNameInput">新しいカードを追加（参照画像登録）</label>
       <input id="cardNameInput" type="text" placeholder="カード名（例: 天海春香 SR）」 />
@@ -301,10 +353,14 @@
     <div class="hint">カードを認識すると自動的に「取得済」になります。</div>
     <div class="card-list" id="cardList"></div>
   </section>
+<button id="exportCsvBtn" class="secondary">CSV 出力</button>
+<input type="file" id="importCsvInput" accept=".csv" style="display:none;">
+<button id="importCsvBtn" class="secondary">CSV 読み込み</button>
 </main>
 
 <!-- OpenCV.js（公式CDNの一例。環境によって変更可） -->
 <script async src="https://docs.opencv.org/4.x/opencv.js" type="text/javascript"></script>
+
 
 <script>
   // -----------------------------
@@ -501,7 +557,9 @@
       id: 'card_' + Date.now(),
       name,
       imageDataUrl: pendingRefImageDataUrl,
-      obtained: false
+      obtained: false,
+ 	csvImported: false   // ← 初期値は false
+
     };
     cards.push(card);
     saveCards();
@@ -533,15 +591,55 @@ function playBeep() {
   osc.stop(ctx.currentTime + 0.15); // 0.15秒で終了
 }
 
+function sortCards() {
+  const mode = document.getElementById("sortSelect").value;
+
+  if (mode === "default") {
+    // 何もしない（登録順）
+    return;
+  }
+
+  cards.sort((a, b) => {
+    const [seriesA, noA, rarityA, nameA] = a.name.split(/[- ]+/);
+    const [seriesB, noB, rarityB, nameB] = b.name.split(/[- ]+/);
+
+    switch (mode) {
+      case "series":
+        return seriesA.localeCompare(seriesB);
+      case "cardNo":
+        return noA.localeCompare(noB);
+      case "rarity":
+        return rarityA.localeCompare(rarityB);
+      case "name":
+        return nameA.localeCompare(nameB);
+      case "obtained":
+        return (b.obtained ? 1 : 0) - (a.obtained ? 1 : 0);
+    }
+  });
+}
+
+
   // -----------------------------
   // カード一覧の描画 & 取得率
   // -----------------------------
 
   function renderCardList() {
+sortCards();
+document.getElementById("sortSelect").addEventListener("change", renderCardList);
     cardListEl.innerHTML = '';
     cards.forEach(card => {
       const item = document.createElement('div');
       item.className = 'card-item' + (card.obtained ? ' obtained' : '');
+
+let color = "#ccc"; // 未取得（グレー）
+
+if (card.obtained && card.csvImported) {
+  color = "orange"; // CSV取得（未スキャン）
+} else if (card.obtained) {
+  color = "lightgreen"; // カメラ取得済
+}
+
+item.style.backgroundColor = color;
 
       const thumbWrap = document.createElement('div');
       thumbWrap.className = 'card-thumb-wrap';
@@ -565,28 +663,56 @@ function playBeep() {
       const span = document.createElement('span');
       span.textContent = card.obtained ? '取得済' : '未取得';
       span.className = card.obtained ? 'obtained' : '';
+
       statusEl.appendChild(span);
 
       body.appendChild(nameEl);
       body.appendChild(metaEl);
       body.appendChild(statusEl);
 
-// ★ 取得済みなら CLEAR ボタンを追加
-    if (card.obtained) {
-      const clearBtn = document.createElement('button');
-      clearBtn.textContent = 'CLEAR';
-      clearBtn.style.marginTop = '4px';
-      clearBtn.style.fontSize = '10px';
-      clearBtn.style.padding = '2px 6px';
-      clearBtn.style.background = '#eee';
-      clearBtn.style.borderRadius = '4px';
-      clearBtn.onclick = () => {
-        card.obtained = false;
-        saveCards();
-        renderCardList();
-      };
-      body.appendChild(clearBtn);
-    }
+// ★ ボタン表示ロジック
+
+// 1. CLEAR ボタン（取得済みなら表示）
+if (card.obtained) {
+  const clearBtn = document.createElement('button');
+  clearBtn.textContent = 'CLEAR';
+  clearBtn.style.marginTop = '4px';
+  clearBtn.style.fontSize = '10px';
+  clearBtn.style.padding = '2px 6px';
+  clearBtn.style.background = '#eee';
+  clearBtn.style.borderRadius = '4px';
+
+  clearBtn.onclick = () => {
+    card.obtained = false;
+    card.csvImported = false;
+    saveCards();
+    renderCardList();
+  };
+
+  body.appendChild(clearBtn);
+}
+
+// 2. 手動取得（CSV扱い）ボタン
+//    → 未取得（グレー）または CSV取得（オレンジ）のときだけ表示
+if (!card.obtained || card.csvImported) {
+  const manualBtn = document.createElement('button');
+  manualBtn.textContent = '手動取得（CSV扱い）';
+  manualBtn.style.marginTop = '4px';
+  manualBtn.style.fontSize = '10px';
+  manualBtn.style.padding = '2px 6px';
+  manualBtn.style.background = '#ffe0b2';
+  manualBtn.style.borderRadius = '4px';
+
+  manualBtn.onclick = () => {
+    card.obtained = true;
+    card.csvImported = true; // ← オレンジ扱い
+    saveCards();
+    renderCardList();
+  };
+
+  body.appendChild(manualBtn);
+}
+    
 
 
 
@@ -768,6 +894,8 @@ function playBeep() {
 
       if (!bestCard.obtained) {
         bestCard.obtained = true;
+	bestCard.csvImported = false;   // ← カメラで取得したので CSV扱いを解除
+
         saveCards();
         renderCardList();
       }
@@ -808,7 +936,331 @@ requestAnimationFrame(autoDetectLoop);
   // -----------------------------
 
   loadCards();
+// ▼ カード名自動生成UIの初期化 ▼
+
+let characters = JSON.parse(localStorage.getItem("characters") || "[]");
+
+function initDropdowns() {
+  const seriesSelect = document.getElementById("seriesSelect");
+  for (let i = 1; i <= 99; i++) {
+    const v = String(i).padStart(2, "0");
+    seriesSelect.innerHTML += `<option value="${v}">${v}</option>`;
+  }
+
+  const cardNoSelect = document.getElementById("cardNoSelect");
+  for (let i = 1; i <= 999; i++) {
+    const v = String(i).padStart(3, "0");
+    cardNoSelect.innerHTML += `<option value="${v}">${v}</option>`;
+  }
+
+  refreshCharacterList();
+}
+
+function refreshCharacterList() {
+  const select = document.getElementById("characterSelect");
+  select.innerHTML = "";
+  characters.forEach(name => {
+    select.innerHTML += `<option value="${name}">${name}</option>`;
+  });
+}
+
+function updateGeneratedName() {
+  const series = document.getElementById("seriesSelect").value;
+  const cardNo = document.getElementById("cardNoSelect").value;
+  const rarity = document.getElementById("raritySelect").value;
+  const character = document.getElementById("characterSelect").value;
+
+  const name = `${series}-${cardNo} ${rarity} ${character}`;
+  document.getElementById("generatedName").value = name;
+
+  // 既存の cardNameInput に反映
+  document.getElementById("cardNameInput").value = name;
+  updateAddButtonState();
+}
+
+["seriesSelect", "cardNoSelect", "raritySelect", "characterSelect"].forEach(id => {
+  document.getElementById(id).addEventListener("change", updateGeneratedName);
+});
+
+document.getElementById("addCharacterBtn").addEventListener("click", () => {
+  const name = prompt("追加するキャラ名を入力してください");
+  if (name) {
+    characters.push(name);
+    localStorage.setItem("characters", JSON.stringify(characters));
+    refreshCharacterList();
+    updateGeneratedName();
+  }
+});
+
+document.getElementById("removeCharacterBtn").addEventListener("click", () => {
+  const select = document.getElementById("characterSelect");
+  const name = select.value;
+  if (!name) return;
+
+  if (confirm(`${name} を削除しますか？`)) {
+    characters = characters.filter(c => c !== name);
+    localStorage.setItem("characters", JSON.stringify(characters));
+    refreshCharacterList();
+    updateGeneratedName();
+  }
+});
+
+// 初期化
+initDropdowns();
+updateGeneratedName();
+
+// ▲ カード名自動生成UIの初期化 ▲
   cameraStatus.textContent = 'OpenCV.js の読み込みを待機中…（数秒かかる場合があります）';
+
+// ▼ CSV 出力用：リビジョン管理（ローカル保存）
+let exportRevision = Number(localStorage.getItem("exportRevision") || 1);
+
+// CSV 出力メイン処理（画像列つき）
+function exportCsv() {
+  const now = new Date().toISOString();
+  const rev = exportRevision++;
+
+  // リビジョン保存
+  localStorage.setItem("exportRevision", exportRevision);
+
+  // CSV ヘッダ
+  let csv = "revision,exported_at,id,name,series,cardNo,rarity,character,obtained,csvImported,image\n";
+
+  cards.forEach(card => {
+    // name を分解（例：03-012 SR 天海春香）
+    const match = card.name.match(/^(\d+)-(\d+)\s+(\S+)\s+(.+)$/);
+    let series = "", cardNo = "", rarity = "", character = "";
+
+    if (match) {
+      series = match[1];
+      cardNo = match[2];
+      rarity = match[3];
+      character = match[4];
+    }
+
+    // 画像（Base64）を CSV 用にダブルクォートで囲む
+    const image = card.imageDataUrl ? `"${card.imageDataUrl}"` : "";
+
+    csv += [
+      rev,
+      now,
+      card.id,
+      `"${card.name}"`,
+      series,
+      cardNo,
+      rarity,
+      `"${character}"`,
+      card.obtained,
+	card.csvImported ? "true" : "false",  // ← ここが追加！
+      image
+    ].join(",") + "\n";
+  });
+
+  // ダウンロード処理
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `cards_export_rev${rev}.csv`;
+  a.click();
+
+  URL.revokeObjectURL(url);
+}
+
+
+
+// ボタンにイベント登録
+document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
+
+// ▼ ここに入れる：CSV パーサー（2番）
+function parseCsv(text) {
+  const lines = text.split("\n").filter(l => l.trim() !== "");
+  const header = lines[0].split(",");
+  const rows = lines.slice(1);
+
+  return rows.map(line => {
+    const cols = [];
+    let current = "";
+    let insideQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+
+      if (c === '"' && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else if (c === '"') {
+        insideQuotes = !insideQuotes;
+      } else if (c === "," && !insideQuotes) {
+        cols.push(current);
+        current = "";
+      } else {
+        current += c;
+      }
+    }
+    cols.push(current);
+
+    const obj = {};
+    header.forEach((h, i) => {
+      obj[h] = cols[i];
+    });
+    return obj;
+  });
+}
+// ▲ ここまでが 2番（CSV パーサー）
+
+
+// ▼ CSV 読み込み機能 ▼
+
+// CSV をパースする簡易関数
+function parseCsv(text) {
+  const lines = text.split("\n").filter(l => l.trim() !== "");
+  const header = lines[0].split(",");
+  const rows = lines.slice(1);
+
+  return rows.map(line => {
+    // カンマ区切り + ダブルクォート対応
+    const cols = [];
+    let current = "";
+    let insideQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+
+      if (c === '"' && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else if (c === '"') {
+        insideQuotes = !insideQuotes;
+      } else if (c === "," && !insideQuotes) {
+        cols.push(current);
+        current = "";
+      } else {
+        current += c;
+      }
+    }
+    cols.push(current);
+
+    const obj = {};
+    header.forEach((h, i) => {
+      obj[h] = cols[i];
+    });
+    return obj;
+  });
+}
+
+// ▼ CSV 修復ツール：image 列の破損を検出して修復する
+function fixCsvRows(rows) {
+  return rows.map((r, index) => {
+    let fixed = { ...r };
+
+    // --- 1. image 列が存在しない場合 ---
+    if (!("image" in r)) {
+      console.warn(`Row ${index}: image 列が存在しません`);
+      fixed.image = "";
+      return fixed;
+    }
+
+    let img = r.image;
+
+    // --- 2. ダブルクォート除去（正常系） ---
+    img = img.replace(/^"|"$/g, "");
+
+    // --- 3. Base64 の先頭が正しいかチェック ---
+    if (!img.startsWith("data:image")) {
+      console.warn(`Row ${index}: Base64 の先頭が不正 → 修復を試みます`);
+
+      // もし途中で切れている場合、前後の列を結合して修復
+      const possible = Object.values(r).join("");
+      const match = possible.match(/data:image\/[a-zA-Z]+;base64,[A-Za-z0-9+/=]+/);
+
+      if (match) {
+        console.log(`Row ${index}: Base64 を自動修復しました`);
+        img = match[0];
+      } else {
+        console.error(`Row ${index}: Base64 を修復できませんでした`);
+        img = "";
+      }
+    }
+
+    // --- 4. ダブルクォートを戻す（CSV 形式に合わせる） ---
+    fixed.image = `"${img}"`;
+
+    return fixed;
+  });
+}
+
+// CSV 読み込みメイン処理
+//function importCsv(file) {
+//  const reader = new FileReader();
+//
+//  reader.onload = () => {
+//    const text = reader.result;
+//    const rows = parseCsv(text);
+//
+//    cards = rows.map(r => ({
+//      id: r.id,
+//      name: r.name.replace(/^"|"$/g, ""),
+//      imageDataUrl: r.image ? r.image.replace(/^"|"$/g, "") : "",
+//      obtained: r.obtained === "true",
+//      csvImported: r.csvImported === "true"   // ← CSVで取得扱いなら true
+//    }));
+//
+//    saveCards();
+//    renderCardList();
+//    updateProgress();
+//
+//    alert("CSV からカードデータを復元しました！");
+//  };
+//
+//  reader.readAsText(file);
+//}
+
+function importCsv(file) {
+  const reader = new FileReader();
+
+  reader.onload = () => {
+    const text = reader.result;
+    let rows = parseCsv(text);
+
+// ★ 診断コード
+  console.log("=== CSV 読み込み診断 ===");
+  console.log("rows[0] =", rows[0]);
+  console.log("image 列 =", rows[0].image);
+  console.log("imageDataUrl に変換後 =", rows[0].image ? rows[0].image.replace(/^"|"$/g, "") : "(空)");
+
+
+    // ★ CSV 修復ツールを適用
+    rows = fixCsvRows(rows);
+
+    cards = rows.map(r => ({
+      id: r.id,
+      name: r.name.replace(/^"|"$/g, ""),
+      imageDataUrl: r.image ? r.image.replace(/^"|"$/g, "") : "",
+      obtained: r.obtained === "true",
+      csvImported: r.csvImported === "true"
+    }));
+
+    saveCards();
+    renderCardList();
+    updateProgress();
+
+    alert("CSV を読み込みました（破損チェック・修復済み）");
+  };
+
+  reader.readAsText(file);
+}
+
+// ボタンイベント
+document.getElementById("importCsvBtn").addEventListener("click", () => {
+  document.getElementById("importCsvInput").click();
+});
+
+document.getElementById("importCsvInput").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (file) importCsv(file);
+});
 </script>
 </body>
 </html>
