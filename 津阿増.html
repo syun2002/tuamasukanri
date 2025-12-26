@@ -356,6 +356,7 @@
 <button id="exportCsvBtn" class="secondary">CSV 出力</button>
 <input type="file" id="importCsvInput" accept=".csv" style="display:none;">
 <button id="importCsvBtn" class="secondary">CSV 読み込み</button>
+<div id="csvVersionDisplay" class="hint">CSV ver: 0</div>
 </main>
 
 <!-- OpenCV.js（公式CDNの一例。環境によって変更可） -->
@@ -363,11 +364,46 @@
 
 
 <script>
+
+
+let db;
+
+function openImageDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("CardImageDB", 1);
+
+    request.onupgradeneeded = (e) => {
+      db = e.target.result;
+
+      // images というストア（テーブル）が無ければ作成
+      if (!db.objectStoreNames.contains("images")) {
+        db.createObjectStore("images", { keyPath: "id" });
+      }
+    };
+
+    request.onsuccess = (e) => {
+      db = e.target.result;
+      console.log("IndexedDB: CardImageDB を開きました");
+      resolve();
+    };
+
+    request.onerror = (e) => {
+      console.error("IndexedDB エラー:", e);
+      reject(e);
+    };
+  });
+}
+
+
+
+
+
   // -----------------------------
   // データ構造 & ストレージ
   // -----------------------------
 
   const STORAGE_KEY = 'imas_tours_cards_v1';
+const CSV_VERSION_KEY = "imas_tours_csv_version";
 
   /**
    * card = {
@@ -392,7 +428,45 @@
       cards = [];
     }
     renderCardList();
+
   }
+
+// ★ 既存 localStorage の画像 → IndexedDB へ移行
+async function migrateLocalStorageImages() {
+  console.log("=== 画像移行チェック開始 ===");
+
+  for (const card of cards) {
+    // すでに移行済みならスキップ
+    if (card.imageKey && card.imageDataUrl === "") continue;
+
+    // localStorage に画像が残っていない場合もスキップ
+    if (!card.imageDataUrl) continue;
+
+    console.log(`移行対象: ${card.id} / ${card.name}`);
+
+    // IndexedDB に保存
+    await saveImageToDB(card.id, card.imageDataUrl);
+
+    // カード情報を更新
+    card.imageKey = card.id;
+    card.imageDataUrl = ""; // localStorage から削除
+  }
+
+  saveCards();
+  console.log("=== 画像移行完了 ===");
+}
+
+function getCsvVersion() {
+  return Number(localStorage.getItem(CSV_VERSION_KEY) || "0");
+}
+
+function incrementCsvVersion() {
+  const v = getCsvVersion() + 1;
+  localStorage.setItem(CSV_VERSION_KEY, String(v));
+  return v;
+}
+
+
 
   function saveCards() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cards));
@@ -549,28 +623,36 @@
   cardNameInput.addEventListener('input', updateAddButtonState);
 
   // カード追加
-  addCardBtn.addEventListener('click', () => {
-    const name = cardNameInput.value.trim();
-    if (!name || !pendingRefImageDataUrl) return;
+addCardBtn.addEventListener('click', async () => {
+  const name = cardNameInput.value.trim();
+  if (!name || !pendingRefImageDataUrl) return;
 
-    const card = {
-      id: 'card_' + Date.now(),
-      name,
-      imageDataUrl: pendingRefImageDataUrl,
-      obtained: false,
- 	csvImported: false   // ← 初期値は false
+  // ★ 正しいID生成
+  const id = 'card_' + Date.now();
 
-    };
-    cards.push(card);
-    saveCards();
-    renderCardList();
+  // ★ 画像を IndexedDB に保存
+  await saveImageToDB(id, pendingRefImageDataUrl);
 
-    cardNameInput.value = '';
-    refFileInput.value = '';
-    pendingRefImageDataUrl = null;
-    addCardBtn.disabled = true;
-    cameraStatus.textContent = `「${card.name}」をカード一覧に追加しました。`;
-  });
+  // ★ localStorage には画像を保存しない
+  const card = {
+    id,
+    name,
+    imageKey: id,     // 画像のキー
+    imageDataUrl: "", // localStorage には保存しない
+    obtained: false,
+    csvImported: false
+  };
+
+  cards.push(card);
+  saveCards();
+  renderCardList();
+
+  cardNameInput.value = '';
+  refFileInput.value = '';
+  pendingRefImageDataUrl = null;
+  addCardBtn.disabled = true;
+  cameraStatus.textContent = `「${card.name}」をカード一覧に追加しました。`;
+});
 
 
 function playBeep() {
@@ -644,7 +726,11 @@ item.style.backgroundColor = color;
       const thumbWrap = document.createElement('div');
       thumbWrap.className = 'card-thumb-wrap';
       const img = document.createElement('img');
-      img.src = card.imageDataUrl;
+      // ★ IndexedDB から画像を読み込む
+loadImageFromDB(card.imageKey).then(dataUrl => {
+  img.src = dataUrl || "";
+});
+
       thumbWrap.appendChild(img);
 
       const body = document.createElement('div');
@@ -768,6 +854,18 @@ if (!card.obtained || card.csvImported) {
     });
   }
 
+
+
+document.getElementById("importCsvBtn").addEventListener("click", () => {
+  document.getElementById("importCsvInput").click();
+});
+
+document.getElementById("importCsvInput").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (file) importCsv(file);
+});
+
+
   function canvasToMat(canvas) {
     const mat = cv.imread(canvas);
     return mat;
@@ -790,6 +888,27 @@ if (!card.obtained || card.csvImported) {
 
     return descriptors;
   }
+
+function loadImageFromDB(id) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("images", "readonly");
+    const store = tx.objectStore("images");
+    const req = store.get(id);
+
+    req.onsuccess = () => {
+      if (req.result) {
+        resolve(req.result.dataUrl);  // Base64 を返す
+      } else {
+        resolve(""); // 見つからない場合は空
+      }
+    };
+
+    req.onerror = (e) => {
+      console.error("IndexedDB: 画像読み込みエラー", e);
+      reject(e);
+    };
+  });
+}
 
   function computeOrbDescriptorsFromCanvas(canvas) {
     const src = canvasToMat(canvas);
@@ -847,15 +966,26 @@ if (!card.obtained || card.csvImported) {
     let bestCard = null;
     let bestMatchCount = 0;
 
-    for (let card of cards) {
-      let cardDesc = null;
-      try {
-        cardDesc = await computeOrbDescriptorsFromDataUrl(card.imageDataUrl);
-      } catch (e) {
-        console.error(e);
-        logMatch(`カード「${card.name}」の特徴量抽出に失敗`);
-        continue;
-      }
+ for (let card of cards) {
+  let cardDesc = null;
+
+  try {
+    // ★ IndexedDB から画像をロード
+    const dataUrl = await loadImageFromDB(card.imageKey);
+
+    if (!dataUrl) {
+      logMatch(`カード「${card.name}」の画像が IndexedDB にありません`);
+      continue;
+    }
+
+    // ★ ORB 特徴量を抽出
+    cardDesc = await computeOrbDescriptorsFromDataUrl(dataUrl);
+
+  } catch (e) {
+    console.error(e);
+    logMatch(`カード「${card.name}」の特徴量抽出に失敗`);
+    continue;
+  }
 
       if (cardDesc.empty()) {
         cardDesc.delete();
@@ -931,11 +1061,114 @@ function autoDetectLoop() {
 requestAnimationFrame(autoDetectLoop);
 
 
+// CSV 出力（IndexedDB 対応）
+exportCsvBtn.addEventListener("click", () => {
+
+  // ★ バージョンを +1
+  const version = incrementCsvVersion();
+
+
+  const header = [
+    "version",
+    "id",
+    "name",
+    "imageKey",
+    "obtained",
+    "csvImported"
+  ];
+
+  const rows = cards.map(card => [
+    version,
+    card.id,
+    card.name,
+    card.imageKey || "",
+    card.obtained ? "true" : "false",
+    card.csvImported ? "true" : "false"
+  ]);
+
+  const csv = [header.join(","), ...rows.map(r => r.join(","))].join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `cards_export_v${version}.csv`; // ★ ファイル名にも反映
+  a.click();
+
+  URL.revokeObjectURL(url);
+updateCsvVersionDisplay();
+});
+
+
+// CSV 読み込み（IndexedDB 対応）
+function importCsv(file) {
+  const reader = new FileReader();
+
+  reader.onload = async () => {
+    const text = reader.result;
+    const lines = text.trim().split("\n");
+
+    const header = lines[0].split(",");
+    const idx = {
+      version: header.indexOf("version"), // ← 追加
+      id: header.indexOf("id"),
+      name: header.indexOf("name"),
+      imageKey: header.indexOf("imageKey"),
+      obtained: header.indexOf("obtained"),
+      csvImported: header.indexOf("csvImported")
+    };
+
+    const newCards = [];
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(",");
+
+      const card = {
+        id: cols[idx.id],
+        name: cols[idx.name],
+        imageKey: cols[idx.imageKey],
+        imageDataUrl: "", // localStorage には保存しない
+        obtained: cols[idx.obtained] === "true",
+        csvImported: cols[idx.csvImported] === "true"
+      };
+
+      newCards.push(card);
+    }
+
+    cards = newCards;
+    saveCards();
+    renderCardList();
+    updateProgress();
+
+    alert("CSV を読み込みました（画像は IndexedDB から読み込みます）");
+  };
+
+  reader.readAsText(file);
+}
+
+function updateCsvVersionDisplay() {
+  const v = getCsvVersion();
+  document.getElementById("csvVersionDisplay").textContent = `CSV ver: ${v}`;
+}
+
+
   // -----------------------------
   // 初期化
   // -----------------------------
 
   loadCards();
+updateCsvVersionDisplay();
+
+
+openImageDB().then(() => {
+  migrateLocalStorageImages().then(() => {
+    renderCardList(); // ← 移行後に描画し直す
+  });
+});
+
+
+
 // ▼ カード名自動生成UIの初期化 ▼
 
 let characters = JSON.parse(localStorage.getItem("characters") || "[]");
@@ -1008,6 +1241,8 @@ document.getElementById("removeCharacterBtn").addEventListener("click", () => {
 // 初期化
 initDropdowns();
 updateGeneratedName();
+openImageDB(); // ← これを追加
+
 
 // ▲ カード名自動生成UIの初期化 ▲
   cameraStatus.textContent = 'OpenCV.js の読み込みを待機中…（数秒かかる場合があります）';
@@ -1072,6 +1307,8 @@ function exportCsv() {
 
 // ボタンにイベント登録
 document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
+updateCsvVersionDisplay();
+
 
 // ▼ ここに入れる：CSV パーサー（2番）
 function parseCsv(text) {
@@ -1191,6 +1428,31 @@ function fixCsvRows(rows) {
   });
 }
 
+function saveImageToDB(id, dataUrl) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("images", "readwrite");
+    const store = tx.objectStore("images");
+
+    // 保存するデータの形
+    const record = {
+      id: id,          // カードID（キー）
+      dataUrl: dataUrl // Base64画像
+    };
+
+    const request = store.put(record);
+
+    request.onsuccess = () => {
+      console.log("IndexedDB: 画像を保存しました →", id);
+      resolve();
+    };
+
+    request.onerror = (e) => {
+      console.error("IndexedDB: 画像保存エラー", e);
+      reject(e);
+    };
+  });
+}
+
 // CSV 読み込みメイン処理
 //function importCsv(file) {
 //  const reader = new FileReader();
@@ -1217,50 +1479,50 @@ function fixCsvRows(rows) {
 //  reader.readAsText(file);
 //}
 
+// CSV 読み込み（IndexedDB 対応）
 function importCsv(file) {
   const reader = new FileReader();
 
-  reader.onload = () => {
+  reader.onload = async () => {
     const text = reader.result;
-    let rows = parseCsv(text);
+    const lines = text.trim().split("\n");
 
-// ★ 診断コード
-  console.log("=== CSV 読み込み診断 ===");
-  console.log("rows[0] =", rows[0]);
-  console.log("image 列 =", rows[0].image);
-  console.log("imageDataUrl に変換後 =", rows[0].image ? rows[0].image.replace(/^"|"$/g, "") : "(空)");
+    const header = lines[0].split(",");
+    const idx = {
+      id: header.indexOf("id"),
+      name: header.indexOf("name"),
+      imageKey: header.indexOf("imageKey"),
+      obtained: header.indexOf("obtained"),
+      csvImported: header.indexOf("csvImported")
+    };
 
+    const newCards = [];
 
-    // ★ CSV 修復ツールを適用
-    rows = fixCsvRows(rows);
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(",");
 
-    cards = rows.map(r => ({
-      id: r.id,
-      name: r.name.replace(/^"|"$/g, ""),
-      imageDataUrl: r.image ? r.image.replace(/^"|"$/g, "") : "",
-      obtained: r.obtained === "true",
-      csvImported: r.csvImported === "true"
-    }));
+      const card = {
+        id: cols[idx.id],
+        name: cols[idx.name],
+        imageKey: cols[idx.imageKey],
+        imageDataUrl: "", // localStorage には保存しない
+        obtained: cols[idx.obtained] === "true",
+        csvImported: cols[idx.csvImported] === "true"
+      };
 
+      newCards.push(card);
+    }
+
+    cards = newCards;
     saveCards();
     renderCardList();
     updateProgress();
 
-    alert("CSV を読み込みました（破損チェック・修復済み）");
+    alert("CSV を読み込みました（画像は IndexedDB から読み込みます）");
   };
 
   reader.readAsText(file);
 }
-
-// ボタンイベント
-document.getElementById("importCsvBtn").addEventListener("click", () => {
-  document.getElementById("importCsvInput").click();
-});
-
-document.getElementById("importCsvInput").addEventListener("change", (e) => {
-  const file = e.target.files[0];
-  if (file) importCsv(file);
-});
 </script>
 </body>
 </html>
