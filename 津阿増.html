@@ -337,6 +337,11 @@
     </div>
 
     <div class="match-log" id="matchLog"></div>
+<button id="exportCsvBtn" class="secondary">CSV 出力</button>
+<input type="file" id="importCsvInput" accept=".csv" style="display:none;">
+<button id="importCsvBtn" class="secondary">CSV 読み込み</button>
+<div id="csvVersionDisplay" class="hint">CSV ver: 0</div>
+<button id="toggleSimpleViewBtn" class="secondary">簡易表示モード</button>
   </section>
 
   <!-- カード一覧 & 取得率パネル -->
@@ -353,10 +358,6 @@
     <div class="hint">カードを認識すると自動的に「取得済」になります。</div>
     <div class="card-list" id="cardList"></div>
   </section>
-<button id="exportCsvBtn" class="secondary">CSV 出力</button>
-<input type="file" id="importCsvInput" accept=".csv" style="display:none;">
-<button id="importCsvBtn" class="secondary">CSV 読み込み</button>
-<div id="csvVersionDisplay" class="hint">CSV ver: 0</div>
 </main>
 
 <!-- OpenCV.js（公式CDNの一例。環境によって変更可） -->
@@ -365,7 +366,7 @@
 
 <script>
 
-
+let simpleView = false;
 let db;
 
 function openImageDB() {
@@ -467,6 +468,10 @@ function incrementCsvVersion() {
 }
 
 
+document.getElementById("toggleSimpleViewBtn").addEventListener("click", () => {
+  simpleView = !simpleView;
+  renderCardList();
+});
 
   function saveCards() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cards));
@@ -706,6 +711,31 @@ function sortCards() {
   // -----------------------------
 
   function renderCardList() {
+
+
+if (simpleView) {
+  // ★ 簡易表示モード（画像なし）
+  cardListEl.innerHTML = '';
+  cards.forEach(card => {
+    const item = document.createElement('div');
+    item.className = 'card-item';
+    item.style.padding = '8px';
+    item.style.background = card.obtained
+      ? (card.csvImported ? 'orange' : 'lightgreen')
+      : '#ccc';
+
+    item.textContent = `${card.name}  /  ${card.obtained ? '取得済' : '未取得'}`;
+
+    cardListEl.appendChild(item);
+  });
+
+  updateProgress();
+  return; // ★ 通常表示をスキップ
+}
+
+
+
+
 sortCards();
 document.getElementById("sortSelect").addEventListener("change", renderCardList);
     cardListEl.innerHTML = '';
@@ -905,6 +935,20 @@ function loadImageFromDB(id) {
 
     req.onerror = (e) => {
       console.error("IndexedDB: 画像読み込みエラー", e);
+      reject(e);
+    };
+  });
+}
+
+function saveImageToDB(id, dataUrl) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("images", "readwrite");
+    const store = tx.objectStore("images");
+    const req = store.put({ id, dataUrl });
+
+    req.onsuccess = () => resolve();
+    req.onerror = (e) => {
+      console.error("IndexedDB: 画像保存エラー", e);
       reject(e);
     };
   });
