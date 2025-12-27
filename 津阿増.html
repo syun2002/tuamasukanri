@@ -286,6 +286,7 @@
     <option value="SSR">SSR</option>
     <option value="CO">CO</option>
     <option value="TR">TR</option>
+    <option value="CP">CP</option>
     <option value="P">P</option>
   </select>
 </div>
@@ -342,6 +343,7 @@
 <button id="importCsvBtn" class="secondary">CSV 読み込み</button>
 <div id="csvVersionDisplay" class="hint">CSV ver: 0</div>
 <button id="toggleSimpleViewBtn" class="secondary">簡易表示モード</button>
+<div id="seriesProgressDisplay" class="hint"></div>
   </section>
 
   <!-- カード一覧 & 取得率パネル -->
@@ -396,7 +398,39 @@ function openImageDB() {
 }
 
 
+function updateSeriesProgress() {
+  const seriesStats = {
+    "01": { total: 0, obtained: 0 },
+    "02": { total: 0, obtained: 0 },
+    "03": { total: 0, obtained: 0 },
+    "CP":  { total: 0, obtained: 0 }   // ★ 追加
 
+  };
+
+  for (const card of cards) {
+    const series = card.name.substring(0, 2); // 先頭2桁が弾数
+
+    if (seriesStats[series]) {
+      seriesStats[series].total++;
+      if (card.obtained) {
+        seriesStats[series].obtained++;
+      }
+    }
+  }
+
+  // HTML に表示
+  const el = document.getElementById("seriesProgressDisplay");
+  el.innerHTML = `
+    第1弾: ${seriesStats["01"].obtained} / ${seriesStats["01"].total}  
+    （${seriesStats["01"].total ? Math.round(seriesStats["01"].obtained / seriesStats["01"].total * 100) : 0}%）<br>
+    第2弾: ${seriesStats["02"].obtained} / ${seriesStats["02"].total}  
+    （${seriesStats["02"].total ? Math.round(seriesStats["02"].obtained / seriesStats["02"].total * 100) : 0}%）<br>
+    第3弾: ${seriesStats["03"].obtained} / ${seriesStats["03"].total}  
+    （${seriesStats["03"].total ? Math.round(seriesStats["03"].obtained / seriesStats["03"].total * 100) : 0}%）<br>
+  CP(キャンペーンカード): ${seriesStats["CP"].obtained} / ${seriesStats["CP"].total}
+    （${seriesStats["CP"].total ? Math.round(seriesStats["CP"].obtained / seriesStats["CP"].total * 100) : 0}%）
+  `;
+}
 
 
   // -----------------------------
@@ -667,15 +701,16 @@ function playBeep() {
 
   osc.type = "sine";      // 音の種類（sine = ピー）
   osc.frequency.value = 880; // 周波数（高めの音）
+  osc.frequency.value = 880; // 周波数（高めの音）
 
-  gain.gain.setValueAtTime(0.5, ctx.currentTime); // 音量
+  gain.gain.setValueAtTime(0.6, ctx.currentTime); // 音量
   gain.gain.exponentialRampToValueAtTime(0.002, ctx.currentTime + 0.15);
 
   osc.connect(gain);
   gain.connect(ctx.destination);
 
   osc.start();
-  osc.stop(ctx.currentTime + 0.15); // 0.15秒で終了
+  osc.stop(ctx.currentTime + 50000); // 0.15秒で終了
 }
 
 function sortCards() {
@@ -710,6 +745,10 @@ function sortCards() {
   // カード一覧の描画 & 取得率
   // -----------------------------
 
+
+document.getElementById("sortSelect").addEventListener("change", renderCardList);
+
+
   function renderCardList() {
 
 
@@ -726,10 +765,21 @@ if (simpleView) {
 
     item.textContent = `${card.name}  /  ${card.obtained ? '取得済' : '未取得'}`;
 
+
+
     cardListEl.appendChild(item);
   });
 
+
+
+
+
+
+
+
+
   updateProgress();
+updateSeriesProgress();
   return; // ★ 通常表示をスキップ
 }
 
@@ -737,7 +787,7 @@ if (simpleView) {
 
 
 sortCards();
-document.getElementById("sortSelect").addEventListener("change", renderCardList);
+//document.getElementById("sortSelect").addEventListener("change", renderCardList);
     cardListEl.innerHTML = '';
     cards.forEach(card => {
       const item = document.createElement('div');
@@ -846,6 +896,8 @@ if (!card.obtained || card.csvImported) {
     });
 
     updateProgress();
+updateSeriesProgress();
+
   }
 
   function updateProgress() {
@@ -1066,9 +1118,14 @@ function saveImageToDB(id, dataUrl) {
   playBeep();
 
 
-      if (!bestCard.obtained) {
+      if (!bestCard.obtained || bestCard.csvImported) {
         bestCard.obtained = true;
-	bestCard.csvImported = false;   // ← カメラで取得したので CSV扱いを解除
+
+    if(bestCard.csvImported){
+ bestCard.obtained = true;
+bestCard.csvImported = false;   // ← カメラで取得したので CSV扱いを解除
+
+}
 
         saveCards();
         renderCardList();
@@ -1149,6 +1206,10 @@ updateCsvVersionDisplay();
 function importCsv(file) {
   const reader = new FileReader();
 
+if (header[0] === "version") {
+  lines.shift(); // version 行を削除
+}
+
   reader.onload = async () => {
     const text = reader.result;
     const lines = text.trim().split("\n");
@@ -1203,6 +1264,8 @@ function updateCsvVersionDisplay() {
 
   loadCards();
 updateCsvVersionDisplay();
+updateSeriesProgress();
+
 
 
 openImageDB().then(() => {
@@ -1219,13 +1282,21 @@ let characters = JSON.parse(localStorage.getItem("characters") || "[]");
 
 function initDropdowns() {
   const seriesSelect = document.getElementById("seriesSelect");
-  for (let i = 1; i <= 99; i++) {
+  for (let i = 1; i <= 11; i++) {
     const v = String(i).padStart(2, "0");
     seriesSelect.innerHTML += `<option value="${v}">${v}</option>`;
   }
 
+
+// ★ P弾を追加
+  const optP = document.createElement("option");
+  optP.value = "CP";
+  optP.textContent = "CP（キャンペーン）";
+  seriesSelect.appendChild(optP);
+
+
   const cardNoSelect = document.getElementById("cardNoSelect");
-  for (let i = 1; i <= 999; i++) {
+  for (let i = 1; i <= 101; i++) {
     const v = String(i).padStart(3, "0");
     cardNoSelect.innerHTML += `<option value="${v}">${v}</option>`;
   }
